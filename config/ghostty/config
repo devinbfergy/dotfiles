@@ -8,7 +8,6 @@ theme = dark:catppuccin-macchiato,light:catppuccin-latte
 bold-is-bright = true
 
 # window settings
-macos-titlebar-style = hidden
 window-decoration = true
 window-theme = auto
 window-padding-color = background
@@ -28,7 +27,7 @@ macos-icon-ghost-color = "#8839ef"
 macos-icon-screen-color = "#1E1E2D"
 
 # Mouse settings
-mouse-hide-while-typing = true
+mouse-hide-while-typing = false
 
 # Font settings
 font-family = "Monaspace Neon Regular"
