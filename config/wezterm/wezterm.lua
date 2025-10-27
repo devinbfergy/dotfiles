@@ -17,7 +17,7 @@ config.colors = {
 }
 
 config.macos_window_background_blur = 30
-config.enable_tab_bar = false
+config.enable_tab_bar = true
 config.window_decorations = "RESIZE"
 config.window_close_confirmation = "NeverPrompt"
 config.native_macos_fullscreen_mode = true
@@ -29,26 +29,6 @@ config.window_padding = {
 }
 
 -- font config
-config.font = wezterm.font("Monaspace Neon", { weight = "Regular" })
-config.font_rules = {
-  {
-    intensity = "Normal",
-    italic = true,
-    font = wezterm.font("Monaspace Radon", { weight = "Regular" }),
-  },
-  {
-    intensity = "Bold",
-    italic = false,
-    font = wezterm.font("Monaspace Neon", { weight = "ExtraBold" }),
-  },
-  {
-    intensity = "Bold",
-    italic = true,
-    font = wezterm.font("Monaspace Radon", { weight = "ExtraBold" }),
-  },
-}
-config.harfbuzz_features = { "calt", "dlig", "clig=1", "ss01", "ss02", "ss03", "ss04", "ss05", "ss06", "ss07", "ss08" }
-config.font_size = 16
 config.line_height = 1.1
 config.adjust_window_size_when_changing_font_size = false
 

@@ -1,2 +1,9 @@
+[tools]
+uv = "latest"
+ruff = "latest"
+
 [settings]
 python.uv_venv_auto = true
+trusted_config_paths = [
+  "~/Developer/"
+]
