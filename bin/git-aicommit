@@ -9,7 +9,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 # Configuration
 OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-gitdiff}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-gpt-oss}"
 COMMIT_STYLE="${COMMIT_STYLE:-conventional}" # conventional or simple
 
 # Usage information
@@ -204,7 +204,7 @@ if [ $EDIT_MODE -eq 1 ]; then
   "${EDITOR:-vim}" "$temp_file"
   commit_message=$(cat "$temp_file")
   rm "$temp_file"
-
+  
   log_info "Edited commit message:"
   echo ""
   printf "%b┌─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
@@ -219,7 +219,7 @@ fi
 if [ $NO_CONFIRM -eq 0 ]; then
   echo -n "$(fmt_key "Commit with this message?") [y/N/e(dit)] "
   read -r response
-
+  
   case "$response" in
     [yY][eE][sS]|[yY])
       # Continue to commit
@@ -231,7 +231,7 @@ if [ $NO_CONFIRM -eq 0 ]; then
       "${EDITOR:-vim}" "$temp_file"
       commit_message=$(cat "$temp_file")
       rm "$temp_file"
-
+      
       log_info "Updated commit message:"
       echo ""
       printf "%b┌─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"

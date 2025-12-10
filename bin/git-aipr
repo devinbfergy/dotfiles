@@ -9,7 +9,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 # Configuration
 OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3-coder}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-gpt-oss}"
 BASE_BRANCH="${BASE_BRANCH:-}"
 
 # Function to detect default branch
@@ -65,7 +65,7 @@ $(fmt_key "Options:")
 
 $(fmt_key "Environment Variables:")
   OLLAMA_HOST             Ollama API host (default: http://localhost:11434)
-  OLLAMA_MODEL            Default model to use (default: qwen3-coder)
+  OLLAMA_MODEL            Default model to use (default: gpt-oss)
   BASE_BRANCH             Default base branch (default: auto-detected main/master)
 
 $(fmt_key "Examples:")
