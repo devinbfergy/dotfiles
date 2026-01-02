@@ -9,7 +9,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 # Configuration
 OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-gpt-oss}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-devstral:latest}"
 BASE_BRANCH="${BASE_BRANCH:-}"
 
 # Function to detect default branch
@@ -65,7 +65,7 @@ $(fmt_key "Options:")
 
 $(fmt_key "Environment Variables:")
   OLLAMA_HOST             Ollama API host (default: http://localhost:11434)
-  OLLAMA_MODEL            Default model to use (default: gpt-oss)
+  OLLAMA_MODEL            Default model to use (default: devstral:latest)
   BASE_BRANCH             Default base branch (default: auto-detected main/master)
 
 $(fmt_key "Examples:")
@@ -207,6 +207,16 @@ fi
 
 # Get commit history
 commit_log=$(git log "${BASE_REF}..HEAD" --pretty=format:"%s" --reverse)
+
+# Truncate diff if too large (max ~8000 chars to keep context reasonable)
+diff_length=${#diff}
+if [ $diff_length -gt 8000 ]; then
+  log_warning "Diff is large (${diff_length} chars), truncating to 8000 chars for better performance"
+  diff="${diff:0:8000}
+...
+[diff truncated for AI processing]"
+fi
+
 log_success "Analyzed changes"
 echo ""
 
@@ -222,6 +232,10 @@ fi
 log_success "Connected to Ollama"
 echo ""
 
+echo "DEBUG: About to build prompt" >&2
+log_info "Building prompt for AI..."
+echo "DEBUG: After log_info" >&2
+
 # Build the prompt for PR generation
 # Extract potential JIRA ticket from branch name
 jira_ticket=""
@@ -229,12 +243,19 @@ if [[ "$current_branch" =~ ([A-Z]+-[0-9]+) ]]; then
   jira_ticket="${BASH_REMATCH[1]}"
 fi
 
+log_info "Creating AI prompt..."
+
+jira_line=""
+if [ -n "$jira_ticket" ]; then
+  jira_line="Detected ticket: ${jira_ticket}"
+fi
+
 prompt="You are an expert at writing pull request titles and descriptions.
 
 Analyze the following git diff and commit history to generate a pull request:
 
 Current branch: ${current_branch}
-$([ -n "$jira_ticket" ] && echo "Detected ticket: ${jira_ticket}")
+${jira_line}
 
 Commit history:
 ${commit_log}
@@ -274,6 +295,7 @@ Do not include any other text, explanations, or markdown code blocks."
 
 # Generate PR content using Ollama
 log_info "Generating PR title and description with model: ${OLLAMA_MODEL}..."
+log_info "This may take a minute..."
 echo ""
 
 # Create JSON request
@@ -285,27 +307,60 @@ request_data=$(jq -n \
     prompt: $prompt,
     stream: false,
     options: {
-      temperature: 0.7,
-      top_p: 0.9
+      temperature: 0.3,
+      top_p: 0.9,
+      num_predict: 600
     }
   }')
 
-# Make request to Ollama
-response=$(curl -sf -X POST "${OLLAMA_HOST}/api/generate" \
+# Make request to Ollama with timeout
+log_info "Sending request to Ollama (timeout: 120s)..."
+response=$(curl -s --max-time 120 -X POST "${OLLAMA_HOST}/api/generate" \
   -H "Content-Type: application/json" \
   -d "$request_data" 2>&1)
 
 curl_exit=$?
+log_info "Curl finished with exit code: ${curl_exit}"
+
 if [ $curl_exit -ne 0 ]; then
   log_error "Failed to generate PR content (curl exit code: ${curl_exit})"
   echo ""
-  echo "Error: $response"
+  if [ $curl_exit -eq 28 ]; then
+    echo "Error: Request timed out after 120 seconds"
+    echo "Tip: Try reducing the size of your diff or use a faster model"
+  else
+    echo "Error details:"
+    echo "$response" | tail -20
+  fi
   exit 1
 fi
 
-# Extract response
-ai_response=$(echo "$response" | jq -r '.response' 2>&1)
+log_info "Received response from Ollama"
+
+echo "DEBUG: About to parse response" >&2
+echo "DEBUG: Response size: ${#response} bytes" >&2
+
+# Save response to temp file for debugging
+temp_response=$(mktemp)
+printf '%s' "$response" > "$temp_response"
+echo "DEBUG: Response saved to $temp_response" >&2
+echo "DEBUG: Response file size: $(wc -c < "$temp_response") bytes" >&2
+
+# Extract response using jq from file instead of pipe with timeout
+echo "DEBUG: Running jq..." >&2
+ai_response=$(timeout 10 jq -r '.response' "$temp_response" 2>&1)
 jq_exit=$?
+
+echo "DEBUG: jq exit code: $jq_exit" >&2
+
+if [ $jq_exit -eq 124 ]; then
+  log_error "jq timed out after 10 seconds"
+  echo "Check response file: $temp_response"
+  exit 1
+fi
+
+# Clean up temp file
+rm -f "$temp_response"
 
 if [ $jq_exit -ne 0 ]; then
   log_error "Failed to parse Ollama response"
@@ -315,8 +370,14 @@ if [ $jq_exit -ne 0 ]; then
   exit 1
 fi
 
+echo "DEBUG: Successfully extracted AI response" >&2
+
+echo "DEBUG: About to trim whitespace" >&2
+
 # Trim whitespace
 ai_response=$(echo "$ai_response" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+echo "DEBUG: Whitespace trimmed" >&2
 
 if [ -z "$ai_response" ] || [ "$ai_response" = "null" ]; then
   log_error "No PR content generated"
@@ -326,12 +387,21 @@ if [ -z "$ai_response" ] || [ "$ai_response" = "null" ]; then
   exit 1
 fi
 
+echo "DEBUG: About to clean response" >&2
+
 # Clean up response (remove any markdown code blocks if present)
 ai_response=$(echo "$ai_response" | sed -e 's/^```.*$//' -e '/^```$/d' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
+echo "DEBUG: Response cleaned, about to parse title" >&2
+
 # Parse title and description
 pr_title=$(echo "$ai_response" | grep -m 1 "^TITLE:" | sed 's/^TITLE:[[:space:]]*//')
+
+echo "DEBUG: Title parsed, about to parse description" >&2
+
 pr_description=$(echo "$ai_response" | sed -n '/^DESCRIPTION:/,$p' | sed '1d' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+echo "DEBUG: Description parsed" >&2
 
 if [ -z "$pr_title" ]; then
   log_error "Failed to parse PR title from response"

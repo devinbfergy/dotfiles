@@ -9,7 +9,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 # Configuration
 OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-gpt-oss}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-devstral:latest}"
 COMMIT_STYLE="${COMMIT_STYLE:-conventional}" # conventional or simple
 
 # Usage information
@@ -32,7 +32,7 @@ $(fmt_key "Options:")
 
 $(fmt_key "Environment Variables:")
   OLLAMA_HOST             Ollama API host (default: http://localhost:11434)
-  OLLAMA_MODEL            Default model to use (default: gitdiff)
+  OLLAMA_MODEL            Default model to use (default: devstral:latest)
   COMMIT_STYLE            Default commit style (default: conventional)
 
 $(fmt_key "Examples:")
@@ -102,6 +102,15 @@ fi
 # Get summary of changes
 files_changed=$(git diff --cached --stat | tail -1)
 log_success "Found staged changes: ${files_changed}"
+
+# Truncate diff if too large (max ~8000 chars to keep context reasonable)
+diff_length=${#diff}
+if [ $diff_length -gt 8000 ]; then
+  log_warning "Diff is large (${diff_length} chars), truncating to 8000 chars for better performance"
+  diff="${diff:0:8000}
+...
+[diff truncated for AI processing]"
+fi
 echo ""
 
 # Check if Ollama is running
@@ -160,20 +169,27 @@ request_data=$(jq -n \
     prompt: $prompt,
     stream: false,
     options: {
-      temperature: 0.7,
-      top_p: 0.9
+      temperature: 0.3,
+      top_p: 0.9,
+      num_predict: 300
     }
   }')
 
-# Make request to Ollama
-response=$(curl -sf -X POST "${OLLAMA_HOST}/api/generate" \
+# Make request to Ollama with timeout
+response=$(curl -sf --max-time 120 -X POST "${OLLAMA_HOST}/api/generate" \
   -H "Content-Type: application/json" \
   -d "$request_data" 2>&1)
 
-if [ $? -ne 0 ]; then
-  log_error "Failed to generate commit message"
+curl_exit=$?
+if [ $curl_exit -ne 0 ]; then
+  log_error "Failed to generate commit message (curl exit code: ${curl_exit})"
   echo ""
-  echo "Error: $response"
+  if [ $curl_exit -eq 28 ]; then
+    echo "Error: Request timed out after 120 seconds"
+    echo "Tip: Try reducing the size of your diff or use a faster model"
+  else
+    echo "Error: $response"
+  fi
   exit 1
 fi
 
@@ -182,6 +198,9 @@ commit_message=$(echo "$response" | jq -r '.response' | sed -e 's/^[[:space:]]*/
 
 if [ -z "$commit_message" ] || [ "$commit_message" = "null" ]; then
   log_error "No commit message generated"
+  echo ""
+  echo "Debug info:"
+  echo "$response" | jq -r '.done_reason // "unknown reason"'
   exit 1
 fi
 

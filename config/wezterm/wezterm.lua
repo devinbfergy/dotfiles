@@ -27,7 +27,7 @@ config.window_padding = {
   top = 0,
   bottom = 0,
 }
-
+config.hide_tab_bar_if_only_one_tab = true
 -- font config
 config.line_height = 1.1
 config.adjust_window_size_when_changing_font_size = false
@@ -68,7 +68,6 @@ else
     b.get_background(),
   }
 end
-
 wezterm.plugin.require("https://gitlab.com/xarvex/presentation.wez").apply_to_config(config)
 
 return config

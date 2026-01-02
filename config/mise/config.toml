@@ -1,6 +1,8 @@
 [tools]
 uv = "latest"
 ruff = "latest"
+java = "zulu-21"
+go = "1.22"
 
 [settings]
 python.uv_venv_auto = true

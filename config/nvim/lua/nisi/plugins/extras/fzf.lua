@@ -62,7 +62,7 @@ command! -bang -nargs=? -complete=dir GitFiles call fzf#vim#gitfiles(<q-args>, f
     dependencies = {
       {
         "nvim-telescope/telescope-fzf-native.nvim",
-        build = "cmake -S. -Bbuild -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release && cmake --install build --prefix build",
+	build = "make",
       },
     },
     opts = {

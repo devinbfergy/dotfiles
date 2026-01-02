@@ -49,7 +49,7 @@ for sid in $(aerospace list-workspaces --monitor 1); do
     background.drawing=on \
     background.border_color=0xAAFFFFFF \
     background.border_width=0 \
-    background.height=25 \
+    background.height=20 \
     icon="$sid" \
     icon.padding_left=10 \
     icon.shadow.distance=4 \

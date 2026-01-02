@@ -10,13 +10,15 @@ after-login-command = []
 # 'after-startup-command' is run after 'after-login-command'
 # Available commands : https://nikitabobko.github.io/AeroSpace/commands
 after-startup-command = [
-    'exec-and-forget sketchybar',
-    'exec-and-forget borders active_color=0xffe1e3e4 inactive_color=0xff494d64 width=5.0'
-    ]
+  'exec-and-forget sketchybar',
+  'exec-and-forget borders active_color=0xffe1e3e4 inactive_color=0xff494d64 width=5.0',
+]
 
 # Notify Sketchybar about workspace change
-exec-on-workspace-change = ['/bin/bash', '-c',
-    'sketchybar --trigger aerospace_workspace_change FOCUSED_WORKSPACE=$AEROSPACE_FOCUSED_WORKSPACE'
+exec-on-workspace-change = [
+  '/bin/bash',
+  '-c',
+  'sketchybar --trigger aerospace_workspace_change FOCUSED_WORKSPACE=$AEROSPACE_FOCUSED_WORKSPACE',
 ]
 
 # Start AeroSpace at login
@@ -59,21 +61,21 @@ if.app-name-regex-substring = 'slack'
 run = 'move-node-to-workspace s'
 
 [workspace-to-monitor-force-assignment]
-    m = ['LG WFH', '27GL850']
-    c = ['LG WFH', '27GL850']
-    p = ['LG WFH', '27GL850']
-    t = ['LG WFH', '27GL850']
-    1 = ['LG WFH', '27GL850']
-    2 = ['LG WFH', '27GL850']
-    3 = ['LG WFH', '27GL850']
-    4 = ['LG WFH', '27GL850']
-    5 = ['LG WFH', '27GL850']
-    6 = 'built-in'
-    7 = 'built-in'
-    8 = 'built-in'
-    9 = 'built-in'
-    10 = 'built-in'
-    s  = 'built-in' # slack workspace
+m = ['LG WFH', '27GL850', 'LS32D80xU']
+c = ['LG WFH', '27GL850', 'LS32D80xU']
+p = ['LG WFH', '27GL850', 'LS32D80xU']
+t = ['LG WFH', '27GL850', 'LS32D80xU']
+1 = ['LG WFH', '27GL850', 'LS32D80xU']
+2 = ['LG WFH', '27GL850', 'LS32D80xU']
+3 = ['LG WFH', '27GL850', 'LS32D80xU']
+4 = ['LG WFH', '27GL850', 'LS32D80xU']
+5 = ['LG WFH', '27GL850', 'LS32D80xU']
+6 = 'built-in'
+7 = 'built-in'
+8 = 'built-in'
+9 = 'built-in'
+10 = 'built-in'
+s = 'built-in'                         # slack workspace
 
 # Possible values: (qwerty|dvorak)
 # See https://nikitabobko.github.io/AeroSpace/guide#key-mapping
@@ -89,19 +91,24 @@ preset = 'qwerty'
 #                 See: https://nikitabobko.github.io/AeroSpace/guide#assign-workspaces-to-monitors
 [gaps]
 inner.horizontal = 5
-inner.vertical =   5
-outer.left =       5
-outer.bottom =     5
-outer.top =        [{ monitor.'LG WFH' = 40 }, {monitor.'27GL850' = 40 }, 10]
-outer.right =      5
+inner.vertical = 5
+outer.left = 5
+outer.bottom = 5
+outer.top = [
+  { monitor.'LG WFH' = 40 },
+  { monitor.'27GL850' = 40 },
+  { monitor.'LS32D80xU' = 40 },
+  10,
+]
+outer.right = 5
 
 # 'main' binding mode declaration
 # See: https://nikitabobko.github.io/AeroSpace/guide#binding-modes
 # 'main' binding mode must be always presented
 # Fallback value (if you omit the key): mode.main.binding = {}
 [mode.main.binding]
-    cmd-h = [] # Disable "hide application"
-    cmd-alt-h = [] # Disable "hide others"
+cmd-h = []     # Disable "hide application"
+cmd-alt-h = [] # Disable "hide others"
 # All possible keys:
 # - Letters.        a, b, c, ..., z
 # - Numbers.        0, 1, 2, ..., 9
@@ -206,7 +213,10 @@ alt-shift-semicolon = 'mode service'
 [mode.service.binding]
 esc = ['reload-config', 'mode main']
 r = ['flatten-workspace-tree', 'mode main'] # reset layout
-f = ['layout floating tiling', 'mode main'] # Toggle between floating and tiling layout
+f = [
+  'layout floating tiling',
+  'mode main',
+] # Toggle between floating and tiling layout
 backspace = ['close-all-windows-but-current', 'mode main']
 
 # sticky is not yet supported https://github.com/nikitabobko/AeroSpace/issues/2
@@ -219,9 +229,10 @@ alt-shift-l = ['join-with right', 'mode main']
 
 
 [mode.resize.binding]
-    h = 'resize width -50'
-    j = 'resize height +50'
-    k = 'resize height -50'
-    l = 'resize width +50'
-    enter = 'mode main'
-    esc = 'mode main'
+h = 'resize width -50'
+j = 'resize height +50'
+k = 'resize height -50'
+l = 'resize width +50'
+enter = 'mode main'
+esc = 'mode main'
+
