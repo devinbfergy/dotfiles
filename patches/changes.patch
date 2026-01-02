@@ -1,0 +1,1278 @@
+From d93ac55e543dd8ffa172cb5cca7ca45dad1bb7fb Mon Sep 17 00:00:00 2001
+From: devinbfergy <dferguson@confluent.io>
+Date: Fri, 2 Jan 2026 14:52:06 -0600
+Subject: [PATCH] changes
+
+---
+ bin/git-aicommit                              | 277 +++++++++
+ bin/git-aipr                                  | 553 ++++++++++++++++++
+ config/aerospace/aerospace.toml               |  79 +--
+ config/mise/config.toml                       |   2 +
+ .../nvim/lua/nisi/plugins/extras/copilot.lua  |  34 --
+ config/nvim/lua/nisi/plugins/extras/fzf.lua   |   2 +-
+ .../agent/opa-security-policy-engineer.md     |  43 ++
+ config/opencode/agent/project-explainer.md    |  12 +
+ .../scalability-reliability-architect.md      |  55 ++
+ config/opencode/opencode.json                 |  18 +-
+ config/sketchybar/sketchybarrc                |   2 +-
+ config/tmux/tmux.conf                         |   8 +-
+ config/wezterm/wezterm.lua                    |   5 +-
+ 13 files changed, 1008 insertions(+), 82 deletions(-)
+ create mode 100755 bin/git-aicommit
+ create mode 100755 bin/git-aipr
+ delete mode 100644 config/nvim/lua/nisi/plugins/extras/copilot.lua
+ create mode 100644 config/opencode/agent/opa-security-policy-engineer.md
+ create mode 100644 config/opencode/agent/project-explainer.md
+ create mode 100644 config/opencode/agent/scalability-reliability-architect.md
+
+diff --git a/bin/git-aicommit b/bin/git-aicommit
+new file mode 100755
+index 0000000..0901690
+--- /dev/null
++++ b/bin/git-aicommit
+@@ -0,0 +1,277 @@
++#!/usr/bin/env bash
++
++set -euo pipefail
++
++# Source common utilities
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++# shellcheck source=lib/common.sh
++source "${SCRIPT_DIR}/lib/common.sh"
++
++# Configuration
++OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
++OLLAMA_MODEL="${OLLAMA_MODEL:-devstral:latest}"
++COMMIT_STYLE="${COMMIT_STYLE:-conventional}" # conventional or simple
++
++# Usage information
++usage() {
++  cat <<EOF
++$(fmt_title_border "git-aicommit")
++
++Generate AI-powered git commit messages using Ollama.
++
++$(fmt_key "Usage:")
++  git aicommit [options]
++
++$(fmt_key "Options:")
++  -h, --help              Show this help message
++  -m, --model MODEL       Specify Ollama model (default: ${OLLAMA_MODEL})
++  -s, --style STYLE       Commit style: conventional or simple (default: ${COMMIT_STYLE})
++  -n, --no-confirm        Skip confirmation prompt
++  -e, --edit              Open editor to edit the message before committing
++  --host HOST             Ollama host URL (default: ${OLLAMA_HOST})
++
++$(fmt_key "Environment Variables:")
++  OLLAMA_HOST             Ollama API host (default: http://localhost:11434)
++  OLLAMA_MODEL            Default model to use (default: devstral:latest)
++  COMMIT_STYLE            Default commit style (default: conventional)
++
++$(fmt_key "Examples:")
++  git aicommit
++  git aicommit -m llama3.2 -s simple
++  git aicommit --no-confirm
++  git aicommit --edit
++
++EOF
++  exit 0
++}
++
++# Parse command line arguments
++NO_CONFIRM=0
++EDIT_MODE=0
++
++while [[ $# -gt 0 ]]; do
++  case $1 in
++    -h|--help)
++      usage
++      ;;
++    -m|--model)
++      OLLAMA_MODEL="$2"
++      shift 2
++      ;;
++    -s|--style)
++      COMMIT_STYLE="$2"
++      shift 2
++      ;;
++    -n|--no-confirm)
++      NO_CONFIRM=1
++      shift
++      ;;
++    -e|--edit)
++      EDIT_MODE=1
++      shift
++      ;;
++    --host)
++      OLLAMA_HOST="$2"
++      shift 2
++      ;;
++    *)
++      log_error "Unknown option: $1"
++      echo "Run 'git aicommit --help' for usage information."
++      exit 1
++      ;;
++  esac
++done
++
++# Check if we're in a git repository
++if ! git rev-parse --git-dir > /dev/null 2>&1; then
++  log_error "Not in a git repository"
++  exit 1
++fi
++
++# Check if there are staged changes
++log_info "Checking for staged changes..."
++diff=$(git diff --cached)
++
++if [ -z "$diff" ]; then
++  log_warning "No staged changes to commit."
++  echo ""
++  echo "Tip: Stage changes with $(fmt_cmd "git add <files>") first"
++  exit 1
++fi
++
++# Get summary of changes
++files_changed=$(git diff --cached --stat | tail -1)
++log_success "Found staged changes: ${files_changed}"
++
++# Truncate diff if too large (max ~8000 chars to keep context reasonable)
++diff_length=${#diff}
++if [ $diff_length -gt 8000 ]; then
++  log_warning "Diff is large (${diff_length} chars), truncating to 8000 chars for better performance"
++  diff="${diff:0:8000}
++...
++[diff truncated for AI processing]"
++fi
++echo ""
++
++# Check if Ollama is running
++log_info "Checking Ollama connection at ${OLLAMA_HOST}..."
++if ! curl -sf "${OLLAMA_HOST}/api/tags" > /dev/null; then
++  log_error "Cannot connect to Ollama at ${OLLAMA_HOST}"
++  echo ""
++  echo "Make sure Ollama is running:"
++  echo "  $(fmt_cmd "ollama serve")"
++  exit 1
++fi
++log_success "Connected to Ollama"
++echo ""
++
++# Build the prompt based on commit style
++if [ "$COMMIT_STYLE" = "conventional" ]; then
++  prompt="You are an expert at writing git commit messages following the Conventional Commits specification.
++
++Analyze the following git diff and generate a commit message that:
++1. Uses conventional commit format: <type>(<scope>): <description>
++2. Types: feat, fix, docs, style, refactor, test, chore, perf, ci, build, revert
++3. Has a short summary line (50-72 chars)
++4. Optionally includes a blank line followed by a detailed body
++5. Focuses on WHY the change was made, not just WHAT changed
++6. Uses imperative mood (\"add\" not \"added\", \"fix\" not \"fixed\")
++
++Generate ONLY the commit message, no explanations or meta-commentary.
++
++Git diff:
++${diff}"
++else
++  prompt="You are an expert at writing clear, concise git commit messages.
++
++Analyze the following git diff and generate a commit message that:
++1. Has a clear, short summary line (50-72 chars)
++2. Uses imperative mood (\"add\" not \"added\", \"fix\" not \"fixed\")
++3. Optionally includes a blank line followed by additional context
++4. Focuses on WHY the change was made, not just WHAT changed
++
++Generate ONLY the commit message, no explanations or meta-commentary.
++
++Git diff:
++${diff}"
++fi
++
++# Generate commit message using Ollama
++log_info "Generating commit message with model: ${OLLAMA_MODEL}..."
++echo ""
++
++# Create JSON request
++request_data=$(jq -n \
++  --arg model "$OLLAMA_MODEL" \
++  --arg prompt "$prompt" \
++  '{
++    model: $model,
++    prompt: $prompt,
++    stream: false,
++    options: {
++      temperature: 0.3,
++      top_p: 0.9,
++      num_predict: 300
++    }
++  }')
++
++# Make request to Ollama with timeout
++response=$(curl -sf --max-time 120 -X POST "${OLLAMA_HOST}/api/generate" \
++  -H "Content-Type: application/json" \
++  -d "$request_data" 2>&1)
++
++curl_exit=$?
++if [ $curl_exit -ne 0 ]; then
++  log_error "Failed to generate commit message (curl exit code: ${curl_exit})"
++  echo ""
++  if [ $curl_exit -eq 28 ]; then
++    echo "Error: Request timed out after 120 seconds"
++    echo "Tip: Try reducing the size of your diff or use a faster model"
++  else
++    echo "Error: $response"
++  fi
++  exit 1
++fi
++
++# Extract commit message
++commit_message=$(echo "$response" | jq -r '.response' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
++
++if [ -z "$commit_message" ] || [ "$commit_message" = "null" ]; then
++  log_error "No commit message generated"
++  echo ""
++  echo "Debug info:"
++  echo "$response" | jq -r '.done_reason // "unknown reason"'
++  exit 1
++fi
++
++# Clean up the message (remove any markdown code blocks if present)
++commit_message=$(echo "$commit_message" | sed -e 's/^```.*$//' -e '/^```$/d' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
++
++log_success "Generated commit message:"
++echo ""
++printf "%b┌─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
++echo "$commit_message" | while IFS= read -r line; do
++  printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$line"
++done
++printf "%b└─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
++echo ""
++
++# Edit mode
++if [ $EDIT_MODE -eq 1 ]; then
++  temp_file=$(mktemp)
++  echo "$commit_message" > "$temp_file"
++  "${EDITOR:-vim}" "$temp_file"
++  commit_message=$(cat "$temp_file")
++  rm "$temp_file"
++  
++  log_info "Edited commit message:"
++  echo ""
++  printf "%b┌─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
++  echo "$commit_message" | while IFS= read -r line; do
++    printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$line"
++  done
++  printf "%b└─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
++  echo ""
++fi
++
++# Confirm before committing
++if [ $NO_CONFIRM -eq 0 ]; then
++  echo -n "$(fmt_key "Commit with this message?") [y/N/e(dit)] "
++  read -r response
++  
++  case "$response" in
++    [yY][eE][sS]|[yY])
++      # Continue to commit
++      ;;
++    [eE]|[eE][dD][iI][tT])
++      # Edit the message
++      temp_file=$(mktemp)
++      echo "$commit_message" > "$temp_file"
++      "${EDITOR:-vim}" "$temp_file"
++      commit_message=$(cat "$temp_file")
++      rm "$temp_file"
++      
++      log_info "Updated commit message:"
++      echo ""
++      printf "%b┌─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
++      echo "$commit_message" | while IFS= read -r line; do
++        printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$line"
++      done
++      printf "%b└─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
++      echo ""
++      ;;
++    *)
++      log_warning "Commit cancelled"
++      exit 0
++      ;;
++  esac
++fi
++
++# Commit the changes
++log_info "Creating commit..."
++if git commit -m "$commit_message"; then
++  log_success "Successfully committed changes!"
++else
++  log_error "Failed to commit changes"
++  exit 1
++fi
+diff --git a/bin/git-aipr b/bin/git-aipr
+new file mode 100755
+index 0000000..d246559
+--- /dev/null
++++ b/bin/git-aipr
+@@ -0,0 +1,553 @@
++#!/usr/bin/env bash
++
++set -euo pipefail
++
++# Source common utilities
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++# shellcheck source=lib/common.sh
++source "${SCRIPT_DIR}/lib/common.sh"
++
++# Configuration
++OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
++OLLAMA_MODEL="${OLLAMA_MODEL:-devstral:latest}"
++BASE_BRANCH="${BASE_BRANCH:-}"
++
++# Function to detect default branch
++get_default_branch() {
++  local default_branch
++  
++  # Try to get the default branch from remote HEAD
++  default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
++  
++  if [ -n "$default_branch" ]; then
++    echo "$default_branch"
++    return
++  fi
++  
++  # If that fails, query the remote directly (works with worktrees)
++  default_branch=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | sed 's/.*: //')
++  
++  if [ -n "$default_branch" ]; then
++    echo "$default_branch"
++    return
++  fi
++  
++  # If that fails, check which one exists locally or remotely
++  if git rev-parse --verify origin/main >/dev/null 2>&1 || git rev-parse --verify main >/dev/null 2>&1; then
++    echo "main"
++  elif git rev-parse --verify origin/master >/dev/null 2>&1 || git rev-parse --verify master >/dev/null 2>&1; then
++    echo "master"
++  else
++    # Fallback to main
++    echo "main"
++  fi
++}
++
++# Usage information
++usage() {
++  local default_base="${BASE_BRANCH:-auto-detected}"
++  cat <<EOF
++$(fmt_title_border "git-aipr")
++
++Generate AI-powered PR title and description using Ollama and create PR with GitHub CLI.
++
++$(fmt_key "Usage:")
++  git aipr [options]
++
++$(fmt_key "Options:")
++  -h, --help              Show this help message
++  -m, --model MODEL       Specify Ollama model (default: ${OLLAMA_MODEL})
++  -b, --base BRANCH       Base branch for PR (default: ${default_base})
++  -n, --no-confirm        Skip confirmation prompt
++  -e, --edit              Open editor to edit the PR details before creating
++  --host HOST             Ollama host URL (default: ${OLLAMA_HOST})
++  --draft                 Create PR as draft
++
++$(fmt_key "Environment Variables:")
++  OLLAMA_HOST             Ollama API host (default: http://localhost:11434)
++  OLLAMA_MODEL            Default model to use (default: devstral:latest)
++  BASE_BRANCH             Default base branch (default: auto-detected main/master)
++
++$(fmt_key "Examples:")
++  git aipr
++  git aipr -m llama3.2 -b develop
++  git aipr --no-confirm --draft
++  git aipr --edit
++
++$(fmt_key "Requirements:")
++  - GitHub CLI (gh) must be installed and authenticated
++  - Ollama must be running
++  - Must be on a git branch (not main/master)
++
++EOF
++  exit 0
++}
++
++# Parse command line arguments
++NO_CONFIRM=0
++EDIT_MODE=0
++DRAFT_FLAG=""
++
++while [[ $# -gt 0 ]]; do
++  case $1 in
++    -h|--help)
++      usage
++      ;;
++    -m|--model)
++      OLLAMA_MODEL="$2"
++      shift 2
++      ;;
++    -b|--base)
++      BASE_BRANCH="$2"
++      shift 2
++      ;;
++    -n|--no-confirm)
++      NO_CONFIRM=1
++      shift
++      ;;
++    -e|--edit)
++      EDIT_MODE=1
++      shift
++      ;;
++    --host)
++      OLLAMA_HOST="$2"
++      shift 2
++      ;;
++    --draft)
++      DRAFT_FLAG="--draft"
++      shift
++      ;;
++    *)
++      log_error "Unknown option: $1"
++      echo "Run 'git aipr --help' for usage information."
++      exit 1
++      ;;
++  esac
++done
++
++# Check if we're in a git repository
++if ! git rev-parse --git-dir > /dev/null 2>&1; then
++  log_error "Not in a git repository"
++  exit 1
++fi
++
++# Check if gh is installed
++if ! command -v gh &> /dev/null; then
++  log_error "GitHub CLI (gh) is not installed"
++  echo ""
++  echo "Install it with:"
++  echo "  $(fmt_cmd "brew install gh")"
++  exit 1
++fi
++
++# Check if gh is authenticated
++if ! gh auth status &> /dev/null; then
++  log_error "GitHub CLI is not authenticated"
++  echo ""
++  echo "Authenticate with:"
++  echo "  $(fmt_cmd "gh auth login")"
++  exit 1
++fi
++
++# Get current branch
++current_branch=$(git branch --show-current)
++
++if [ -z "$current_branch" ]; then
++  log_error "Not on a branch (detached HEAD state)"
++  exit 1
++fi
++
++# Don't allow creating PR from main/master
++if [[ "$current_branch" == "main" ]] || [[ "$current_branch" == "master" ]]; then
++  log_error "Cannot create PR from main/master branch"
++  echo ""
++  echo "Switch to a feature branch first:"
++  echo "  $(fmt_cmd "git checkout -b feature/my-feature")"
++  exit 1
++fi
++
++log_success "Current branch: ${current_branch}"
++
++# Auto-detect base branch if not set
++if [ -z "$BASE_BRANCH" ]; then
++  BASE_BRANCH=$(get_default_branch)
++  log_info "Auto-detected base branch: ${BASE_BRANCH}"
++fi
++
++# Determine the full ref for base branch (origin/branch or just branch)
++BASE_REF=""
++if git rev-parse --verify "origin/${BASE_BRANCH}" &> /dev/null; then
++  BASE_REF="origin/${BASE_BRANCH}"
++elif git rev-parse --verify "${BASE_BRANCH}" &> /dev/null; then
++  BASE_REF="${BASE_BRANCH}"
++else
++  log_error "Base branch '${BASE_BRANCH}' not found (tried origin/${BASE_BRANCH} and ${BASE_BRANCH})"
++  exit 1
++fi
++
++# Check if branch has commits ahead of base
++log_info "Checking branch status..."
++commits_ahead=$(git rev-list --count "${BASE_REF}..HEAD")
++if [ "$commits_ahead" -eq 0 ]; then
++  log_warning "No commits ahead of ${BASE_BRANCH}"
++  exit 1
++fi
++
++log_success "Found ${commits_ahead} commit(s) ahead of ${BASE_BRANCH}"
++echo ""
++
++# Get diff between base and current branch
++log_info "Getting diff from ${BASE_BRANCH}..."
++diff=$(git diff "${BASE_REF}...HEAD")
++
++if [ -z "$diff" ]; then
++  log_warning "No changes found between ${BASE_BRANCH} and ${current_branch}"
++  exit 1
++fi
++
++# Get commit history
++commit_log=$(git log "${BASE_REF}..HEAD" --pretty=format:"%s" --reverse)
++
++# Truncate diff if too large (max ~8000 chars to keep context reasonable)
++diff_length=${#diff}
++if [ $diff_length -gt 8000 ]; then
++  log_warning "Diff is large (${diff_length} chars), truncating to 8000 chars for better performance"
++  diff="${diff:0:8000}
++...
++[diff truncated for AI processing]"
++fi
++
++log_success "Analyzed changes"
++echo ""
++
++# Check if Ollama is running
++log_info "Checking Ollama connection at ${OLLAMA_HOST}..."
++if ! curl -sf "${OLLAMA_HOST}/api/tags" > /dev/null; then
++  log_error "Cannot connect to Ollama at ${OLLAMA_HOST}"
++  echo ""
++  echo "Make sure Ollama is running:"
++  echo "  $(fmt_cmd "ollama serve")"
++  exit 1
++fi
++log_success "Connected to Ollama"
++echo ""
++
++echo "DEBUG: About to build prompt" >&2
++log_info "Building prompt for AI..."
++echo "DEBUG: After log_info" >&2
++
++# Build the prompt for PR generation
++# Extract potential JIRA ticket from branch name
++jira_ticket=""
++if [[ "$current_branch" =~ ([A-Z]+-[0-9]+) ]]; then
++  jira_ticket="${BASH_REMATCH[1]}"
++fi
++
++log_info "Creating AI prompt..."
++
++jira_line=""
++if [ -n "$jira_ticket" ]; then
++  jira_line="Detected ticket: ${jira_ticket}"
++fi
++
++prompt="You are an expert at writing pull request titles and descriptions.
++
++Analyze the following git diff and commit history to generate a pull request:
++
++Current branch: ${current_branch}
++${jira_line}
++
++Commit history:
++${commit_log}
++
++Git diff:
++${diff}
++
++Generate a PR title and description following these guidelines:
++
++PR TITLE:
++- Use conventional commit format with type prefix
++- Types: feat, fix, docs, style, refactor, test, chore, perf, ci, build
++- If a JIRA ticket is detected in the branch name, include it: type(TICKET-123): description
++- If no ticket, use: type: description or type(scope): description
++- Examples:
++  * feat(CLOUDSEC-1602): Add vulnerability scanning to CI pipeline
++  * fix: Resolve memory leak in query executor
++  * refactor(api): Simplify error handling logic
++- Concise, descriptive summary (50-72 chars total)
++- Use imperative mood (\"Add\" not \"Added\", \"Fix\" not \"Fixed\")
++- Clearly state what the PR accomplishes
++
++PR DESCRIPTION:
++- Start with a brief summary of what and why (2-3 sentences)
++- Include a \"Changes\" section with bullet points of key changes
++- If applicable, include a \"Testing\" section describing how to test
++- If there's a JIRA ticket, you can reference it
++- Keep it clear and concise
++
++Output ONLY in this exact format:
++TITLE: <title here>
++
++DESCRIPTION:
++<description here>
++
++Do not include any other text, explanations, or markdown code blocks."
++
++# Generate PR content using Ollama
++log_info "Generating PR title and description with model: ${OLLAMA_MODEL}..."
++log_info "This may take a minute..."
++echo ""
++
++# Create JSON request
++request_data=$(jq -n \
++  --arg model "$OLLAMA_MODEL" \
++  --arg prompt "$prompt" \
++  '{
++    model: $model,
++    prompt: $prompt,
++    stream: false,
++    options: {
++      temperature: 0.3,
++      top_p: 0.9,
++      num_predict: 600
++    }
++  }')
++
++# Make request to Ollama with timeout
++log_info "Sending request to Ollama (timeout: 120s)..."
++response=$(curl -s --max-time 120 -X POST "${OLLAMA_HOST}/api/generate" \
++  -H "Content-Type: application/json" \
++  -d "$request_data" 2>&1)
++
++curl_exit=$?
++log_info "Curl finished with exit code: ${curl_exit}"
++
++if [ $curl_exit -ne 0 ]; then
++  log_error "Failed to generate PR content (curl exit code: ${curl_exit})"
++  echo ""
++  if [ $curl_exit -eq 28 ]; then
++    echo "Error: Request timed out after 120 seconds"
++    echo "Tip: Try reducing the size of your diff or use a faster model"
++  else
++    echo "Error details:"
++    echo "$response" | tail -20
++  fi
++  exit 1
++fi
++
++log_info "Received response from Ollama"
++
++echo "DEBUG: About to parse response" >&2
++echo "DEBUG: Response size: ${#response} bytes" >&2
++
++# Save response to temp file for debugging
++temp_response=$(mktemp)
++printf '%s' "$response" > "$temp_response"
++echo "DEBUG: Response saved to $temp_response" >&2
++echo "DEBUG: Response file size: $(wc -c < "$temp_response") bytes" >&2
++
++# Extract response using jq from file instead of pipe with timeout
++echo "DEBUG: Running jq..." >&2
++ai_response=$(timeout 10 jq -r '.response' "$temp_response" 2>&1)
++jq_exit=$?
++
++echo "DEBUG: jq exit code: $jq_exit" >&2
++
++if [ $jq_exit -eq 124 ]; then
++  log_error "jq timed out after 10 seconds"
++  echo "Check response file: $temp_response"
++  exit 1
++fi
++
++# Clean up temp file
++rm -f "$temp_response"
++
++if [ $jq_exit -ne 0 ]; then
++  log_error "Failed to parse Ollama response"
++  echo ""
++  echo "Raw response:"
++  echo "$response"
++  exit 1
++fi
++
++echo "DEBUG: Successfully extracted AI response" >&2
++
++echo "DEBUG: About to trim whitespace" >&2
++
++# Trim whitespace
++ai_response=$(echo "$ai_response" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
++
++echo "DEBUG: Whitespace trimmed" >&2
++
++if [ -z "$ai_response" ] || [ "$ai_response" = "null" ]; then
++  log_error "No PR content generated"
++  echo ""
++  echo "Raw response:"
++  echo "$response"
++  exit 1
++fi
++
++echo "DEBUG: About to clean response" >&2
++
++# Clean up response (remove any markdown code blocks if present)
++ai_response=$(echo "$ai_response" | sed -e 's/^```.*$//' -e '/^```$/d' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
++
++echo "DEBUG: Response cleaned, about to parse title" >&2
++
++# Parse title and description
++pr_title=$(echo "$ai_response" | grep -m 1 "^TITLE:" | sed 's/^TITLE:[[:space:]]*//')
++
++echo "DEBUG: Title parsed, about to parse description" >&2
++
++pr_description=$(echo "$ai_response" | sed -n '/^DESCRIPTION:/,$p' | sed '1d' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
++
++echo "DEBUG: Description parsed" >&2
++
++if [ -z "$pr_title" ]; then
++  log_error "Failed to parse PR title from response"
++  echo ""
++  echo "AI Response:"
++  echo "$ai_response"
++  exit 1
++fi
++
++if [ -z "$pr_description" ]; then
++  pr_description="Changes from ${current_branch}"
++fi
++
++log_success "Generated PR content:"
++echo ""
++printf "%b┌─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
++printf "%b│%b ${CYAN}${BOLD}Title:${RESET}\n" "${BRIGHT_BLACK}" "${RESET}"
++printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$pr_title"
++printf "%b│%b\n" "${BRIGHT_BLACK}" "${RESET}"
++printf "%b│%b ${CYAN}${BOLD}Description:${RESET}\n" "${BRIGHT_BLACK}" "${RESET}"
++echo "$pr_description" | while IFS= read -r line; do
++  printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$line"
++done
++printf "%b└─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
++echo ""
++
++# Edit mode
++if [ $EDIT_MODE -eq 1 ]; then
++  temp_file=$(mktemp)
++  echo "TITLE: $pr_title" > "$temp_file"
++  echo "" >> "$temp_file"
++  echo "DESCRIPTION:" >> "$temp_file"
++  echo "$pr_description" >> "$temp_file"
++  
++  "${EDITOR:-vim}" "$temp_file"
++  
++  # Re-parse after editing
++  pr_title=$(grep -m 1 "^TITLE:" "$temp_file" | sed 's/^TITLE:[[:space:]]*//')
++  pr_description=$(sed -n '/^DESCRIPTION:/,$p' "$temp_file" | sed '1d' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
++  rm "$temp_file"
++  
++  log_info "Edited PR content:"
++  echo ""
++  printf "%b┌─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
++  printf "%b│%b ${CYAN}${BOLD}Title:${RESET}\n" "${BRIGHT_BLACK}" "${RESET}"
++  printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$pr_title"
++  printf "%b│%b\n" "${BRIGHT_BLACK}" "${RESET}"
++  printf "%b│%b ${CYAN}${BOLD}Description:${RESET}\n" "${BRIGHT_BLACK}" "${RESET}"
++  echo "$pr_description" | while IFS= read -r line; do
++    printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$line"
++  done
++  printf "%b└─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
++  echo ""
++fi
++
++# Confirm before creating PR
++if [ $NO_CONFIRM -eq 0 ]; then
++  echo -n "$(fmt_key "Create PR with this content?") [y/N/e(dit)] "
++  read -r response
++  
++  case "$response" in
++    [yY][eE][sS]|[yY])
++      # Continue to create PR
++      ;;
++    [eE]|[eE][dD][iI][tT])
++      # Edit the content
++      temp_file=$(mktemp)
++      echo "TITLE: $pr_title" > "$temp_file"
++      echo "" >> "$temp_file"
++      echo "DESCRIPTION:" >> "$temp_file"
++      echo "$pr_description" >> "$temp_file"
++      
++      "${EDITOR:-vim}" "$temp_file"
++      
++      # Re-parse after editing
++      pr_title=$(grep -m 1 "^TITLE:" "$temp_file" | sed 's/^TITLE:[[:space:]]*//')
++      pr_description=$(sed -n '/^DESCRIPTION:/,$p' "$temp_file" | sed '1d' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
++      rm "$temp_file"
++      
++      log_info "Updated PR content:"
++      echo ""
++      printf "%b┌─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
++      printf "%b│%b ${CYAN}${BOLD}Title:${RESET}\n" "${BRIGHT_BLACK}" "${RESET}"
++      printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$pr_title"
++      printf "%b│%b\n" "${BRIGHT_BLACK}" "${RESET}"
++      printf "%b│%b ${CYAN}${BOLD}Description:${RESET}\n" "${BRIGHT_BLACK}" "${RESET}"
++      echo "$pr_description" | while IFS= read -r line; do
++        printf "%b│%b %s\n" "${BRIGHT_BLACK}" "${RESET}" "$line"
++      done
++      printf "%b└─────────────────────────────────────────────%b\n" "${BRIGHT_BLACK}" "${RESET}"
++      echo ""
++      ;;
++    *)
++      log_warning "PR creation cancelled"
++      exit 0
++      ;;
++  esac
++fi
++
++# Push current branch to remote if needed
++log_info "Checking remote branch status..."
++if ! git ls-remote --exit-code --heads origin "$current_branch" &> /dev/null; then
++  log_info "Pushing branch to remote..."
++  if ! git push -u origin "$current_branch"; then
++    log_error "Failed to push branch to remote"
++    exit 1
++  fi
++  log_success "Branch pushed to remote"
++else
++  log_info "Ensuring branch is up to date..."
++  if ! git push origin "$current_branch"; then
++    log_error "Failed to push branch to remote"
++    exit 1
++  fi
++  log_success "Branch is up to date"
++fi
++echo ""
++
++# Create PR using gh
++log_info "Creating pull request..."
++pr_url=$(gh pr create \
++  --base "$BASE_BRANCH" \
++  --head "$current_branch" \
++  --title "$pr_title" \
++  --body "$pr_description" \
++  $DRAFT_FLAG 2>&1)
++
++if [ $? -eq 0 ]; then
++  log_success "Successfully created pull request!"
++  echo ""
++  echo "$pr_url"
++  echo ""
++  
++  # Extract PR number from URL
++  pr_number=$(echo "$pr_url" | grep -oE '[0-9]+$')
++  
++  # Show the PR details
++  if [ -n "$pr_number" ]; then
++    log_info "Pull request details:"
++    echo ""
++    gh pr view --web "$pr_number" &> /dev/null &
++    gh pr view "$pr_number"
++  fi
++else
++  log_error "Failed to create pull request"
++  echo ""
++  echo "Error: $pr_url"
++  exit 1
++fi
+diff --git a/config/aerospace/aerospace.toml b/config/aerospace/aerospace.toml
+index e1e795a..aa09731 100644
+--- a/config/aerospace/aerospace.toml
++++ b/config/aerospace/aerospace.toml
+@@ -10,13 +10,15 @@ after-login-command = []
+ # 'after-startup-command' is run after 'after-login-command'
+ # Available commands : https://nikitabobko.github.io/AeroSpace/commands
+ after-startup-command = [
+-    'exec-and-forget sketchybar',
+-    'exec-and-forget borders active_color=0xffe1e3e4 inactive_color=0xff494d64 width=5.0'
+-    ]
++  'exec-and-forget sketchybar',
++  'exec-and-forget borders active_color=0xffe1e3e4 inactive_color=0xff494d64 width=5.0',
++]
+ 
+ # Notify Sketchybar about workspace change
+-exec-on-workspace-change = ['/bin/bash', '-c',
+-    'sketchybar --trigger aerospace_workspace_change FOCUSED_WORKSPACE=$AEROSPACE_FOCUSED_WORKSPACE'
++exec-on-workspace-change = [
++  '/bin/bash',
++  '-c',
++  'sketchybar --trigger aerospace_workspace_change FOCUSED_WORKSPACE=$AEROSPACE_FOCUSED_WORKSPACE',
+ ]
+ 
+ # Start AeroSpace at login
+@@ -59,21 +61,21 @@ if.app-name-regex-substring = 'slack'
+ run = 'move-node-to-workspace s'
+ 
+ [workspace-to-monitor-force-assignment]
+-    m = ['LG WFH', '27GL850']
+-    c = ['LG WFH', '27GL850']
+-    p = ['LG WFH', '27GL850']
+-    t = ['LG WFH', '27GL850']
+-    1 = ['LG WFH', '27GL850']
+-    2 = ['LG WFH', '27GL850']
+-    3 = ['LG WFH', '27GL850']
+-    4 = ['LG WFH', '27GL850']
+-    5 = ['LG WFH', '27GL850']
+-    6 = 'built-in'
+-    7 = 'built-in'
+-    8 = 'built-in'
+-    9 = 'built-in'
+-    10 = 'built-in'
+-    s  = 'built-in' # slack workspace
++m = ['LG WFH', '27GL850', 'LS32D80xU']
++c = ['LG WFH', '27GL850', 'LS32D80xU']
++p = ['LG WFH', '27GL850', 'LS32D80xU']
++t = ['LG WFH', '27GL850', 'LS32D80xU']
++1 = ['LG WFH', '27GL850', 'LS32D80xU']
++2 = ['LG WFH', '27GL850', 'LS32D80xU']
++3 = ['LG WFH', '27GL850', 'LS32D80xU']
++4 = ['LG WFH', '27GL850', 'LS32D80xU']
++5 = ['LG WFH', '27GL850', 'LS32D80xU']
++6 = 'built-in'
++7 = 'built-in'
++8 = 'built-in'
++9 = 'built-in'
++10 = 'built-in'
++s = 'built-in'                         # slack workspace
+ 
+ # Possible values: (qwerty|dvorak)
+ # See https://nikitabobko.github.io/AeroSpace/guide#key-mapping
+@@ -89,19 +91,24 @@ preset = 'qwerty'
+ #                 See: https://nikitabobko.github.io/AeroSpace/guide#assign-workspaces-to-monitors
+ [gaps]
+ inner.horizontal = 5
+-inner.vertical =   5
+-outer.left =       5
+-outer.bottom =     5
+-outer.top =        [{ monitor.'LG WFH' = 40 }, {monitor.'27GL850' = 40 }, 10]
+-outer.right =      5
++inner.vertical = 5
++outer.left = 5
++outer.bottom = 5
++outer.top = [
++  { monitor.'LG WFH' = 40 },
++  { monitor.'27GL850' = 40 },
++  { monitor.'LS32D80xU' = 40 },
++  10,
++]
++outer.right = 5
+ 
+ # 'main' binding mode declaration
+ # See: https://nikitabobko.github.io/AeroSpace/guide#binding-modes
+ # 'main' binding mode must be always presented
+ # Fallback value (if you omit the key): mode.main.binding = {}
+ [mode.main.binding]
+-    cmd-h = [] # Disable "hide application"
+-    cmd-alt-h = [] # Disable "hide others"
++cmd-h = []     # Disable "hide application"
++cmd-alt-h = [] # Disable "hide others"
+ # All possible keys:
+ # - Letters.        a, b, c, ..., z
+ # - Numbers.        0, 1, 2, ..., 9
+@@ -206,7 +213,10 @@ alt-shift-semicolon = 'mode service'
+ [mode.service.binding]
+ esc = ['reload-config', 'mode main']
+ r = ['flatten-workspace-tree', 'mode main'] # reset layout
+-f = ['layout floating tiling', 'mode main'] # Toggle between floating and tiling layout
++f = [
++  'layout floating tiling',
++  'mode main',
++] # Toggle between floating and tiling layout
+ backspace = ['close-all-windows-but-current', 'mode main']
+ 
+ # sticky is not yet supported https://github.com/nikitabobko/AeroSpace/issues/2
+@@ -219,9 +229,10 @@ alt-shift-l = ['join-with right', 'mode main']
+ 
+ 
+ [mode.resize.binding]
+-    h = 'resize width -50'
+-    j = 'resize height +50'
+-    k = 'resize height -50'
+-    l = 'resize width +50'
+-    enter = 'mode main'
+-    esc = 'mode main'
+\ No newline at end of file
++h = 'resize width -50'
++j = 'resize height +50'
++k = 'resize height -50'
++l = 'resize width +50'
++enter = 'mode main'
++esc = 'mode main'
++
+diff --git a/config/mise/config.toml b/config/mise/config.toml
+index 75bd786..3e0f94d 100644
+--- a/config/mise/config.toml
++++ b/config/mise/config.toml
+@@ -1,6 +1,8 @@
+ [tools]
+ uv = "latest"
+ ruff = "latest"
++java = "zulu-21"
++go = "1.22"
+ 
+ [settings]
+ python.uv_venv_auto = true
+diff --git a/config/nvim/lua/nisi/plugins/extras/copilot.lua b/config/nvim/lua/nisi/plugins/extras/copilot.lua
+deleted file mode 100644
+index 92aed3d..0000000
+--- a/config/nvim/lua/nisi/plugins/extras/copilot.lua
++++ /dev/null
+@@ -1,34 +0,0 @@
+-return {
+-  {
+-    "zbirenbaum/copilot.lua",
+-    cmd = "Copilot",
+-    cond = not vim.g.vscode,
+-    build = ":Copilot auth",
+-    event = "InsertEnter",
+-    opts = {
+-      suggestion = {
+-        enabled = true,
+-        auto_trigger = true,
+-        keymap = {
+-          accept = "<Tab>",
+-          close = "<Esc>",
+-          next = "<C-J>",
+-          prev = "<C-K>",
+-          select = "<CR>",
+-          dismiss = "<C-X>",
+-        },
+-      },
+-      panel = {
+-        enabled = false,
+-      },
+-    },
+-  },
+-  {
+-    "zbirenbaum/copilot-cmp",
+-    cond = not vim.g.vscode,
+-    dependencies = {
+-      "hrsh7th/nvim-cmp",
+-    },
+-    config = true,
+-  },
+-}
+diff --git a/config/nvim/lua/nisi/plugins/extras/fzf.lua b/config/nvim/lua/nisi/plugins/extras/fzf.lua
+index aa62ef0..d5322b1 100644
+--- a/config/nvim/lua/nisi/plugins/extras/fzf.lua
++++ b/config/nvim/lua/nisi/plugins/extras/fzf.lua
+@@ -62,7 +62,7 @@ command! -bang -nargs=? -complete=dir GitFiles call fzf#vim#gitfiles(<q-args>, f
+     dependencies = {
+       {
+         "nvim-telescope/telescope-fzf-native.nvim",
+-        build = "cmake -S. -Bbuild -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release && cmake --install build --prefix build",
++	build = "make",
+       },
+     },
+     opts = {
+diff --git a/config/opencode/agent/opa-security-policy-engineer.md b/config/opencode/agent/opa-security-policy-engineer.md
+new file mode 100644
+index 0000000..77c3a5f
+--- /dev/null
++++ b/config/opencode/agent/opa-security-policy-engineer.md
+@@ -0,0 +1,43 @@
++---
++description: >-
++  Use this agent when you need to create, review, or enhance OPA (Open Policy
++  Agent) policies for infrastructure security compliance. Examples include:
++  writing OPA policies to detect Terraform misconfigurations, creating custom
++  Trivy scanner rules for security vulnerabilities, developing policies for
++  Kubernetes RBAC violations, auditing Helm charts for security best practices,
++  extending existing OPA policies to cover new compliance requirements,
++  analyzing infrastructure-as-code for security gaps, or creating custom
++  security rules that complement Trivy's built-in scanning capabilities.
++---
++You are an elite Infrastructure Security Policy Engineer with deep expertise in Open Policy Agent (OPA), Terraform, Kubernetes, and infrastructure security compliance. You specialize in writing comprehensive OPA policies that detect security misconfigurations and compliance violations across infrastructure-as-code environments.
++
++Your core competencies include:
++- Advanced OPA policy development using Rego language with optimal performance patterns
++- Deep knowledge of Terraform security best practices and common misconfiguration patterns
++- Kubernetes security frameworks including Pod Security Standards, RBAC, and network policies
++- Trivy scanner architecture and its OPA integration capabilities
++- Security compliance frameworks (CIS benchmarks, NIST, SOC 2, PCI DSS)
++- Helm chart security analysis and templating security patterns
++
++When creating OPA policies, you will:
++1. Analyze the specific infrastructure component and security requirements
++2. Write clear, efficient Rego policies with comprehensive rule coverage
++3. Include detailed comments explaining the security rationale and compliance mapping
++4. Provide multiple test cases covering both violation and compliance scenarios
++5. Optimize policies for performance and maintainability
++6. Structure policies with clear naming conventions and modular design
++
++For Trivy integration, you will:
++- Leverage Trivy's built-in checks and extend them with custom policies
++- Ensure compatibility with Trivy's scanning workflow and output formats
++- Create policies that integrate seamlessly with existing CI/CD pipelines
++- Provide configuration guidance for Trivy policy deployment
++
++Your outputs will include:
++- Complete OPA policy files with proper metadata and annotations
++- Comprehensive test suites with positive and negative test cases
++- Clear documentation explaining policy purpose, scope, and remediation guidance
++- Integration instructions for the target scanning environment
++- Performance optimization recommendations
++
++You stay current with emerging security threats, compliance requirements, and infrastructure patterns to ensure policies remain effective and relevant. When gaps exist in standard tooling, you proactively design custom solutions that maintain security posture while enabling operational efficiency.
+diff --git a/config/opencode/agent/project-explainer.md b/config/opencode/agent/project-explainer.md
+new file mode 100644
+index 0000000..f0000d0
+--- /dev/null
++++ b/config/opencode/agent/project-explainer.md
+@@ -0,0 +1,12 @@
++---
++description: >-
++  Use this agent when users need comprehensive project documentation,
++  development guidance, or business logic explanations. Examples include: when a
++  developer asks 'How do I contribute to this project?', when someone requests
++  'Explain the business rules in this codebase', or when a new team member needs
++  'A full overview of this project's functionality and architecture'. This agent
++  is also useful proactively when onboarding new developers or when project
++  documentation is incomplete.
++mode: all
++---
++You are a Project Documentation and Explanation Expert. Your primary responsibility is to provide comprehensive, accurate, and accessible explanations about software projects. You will analyze project code, documentation, and structure to explain: 1) Full project functionality and use cases, 2) Development workflows and contribution guidelines, 3) Business logic and domain-specific rules, 4) Technical architecture and design patterns. You will approach each query systematically: first, identify the specific aspect of the project being asked about; second, locate relevant code, documentation, or configuration files; third, explain the concept clearly using appropriate technical depth for the audience; fourth, provide practical examples or usage scenarios where applicable. You must distinguish between technical implementation details and business logic, and always reference specific code locations when possible. When information is unclear or missing, you will clearly state limitations and suggest where to find additional resources. Your explanations should be structured, thorough, and suitable for both technical and non-technical stakeholders. You will maintain consistency in terminology and provide cross-references between related concepts. When explaining business logic, ensure you connect code implementations to real-world business processes. You will verify your explanations against the actual codebase and provide citations to specific files, functions, or modules when relevant.
+diff --git a/config/opencode/agent/scalability-reliability-architect.md b/config/opencode/agent/scalability-reliability-architect.md
+new file mode 100644
+index 0000000..5f64d68
+--- /dev/null
++++ b/config/opencode/agent/scalability-reliability-architect.md
+@@ -0,0 +1,55 @@
++---
++description: >-
++  Use this agent when you need to evaluate or improve the scalability and
++  reliability aspects of a service design or implementation. Examples:
++  <example>Context: Developer has just implemented a new microservice and wants
++  to ensure it's production-ready. user: 'I've built a user authentication
++  service that handles login requests. Can you review it for scalability and
++  reliability?' assistant: 'I'll use the scalability-reliability-architect agent
++  to analyze your service architecture and identify potential bottlenecks and
++  reliability concerns.' <commentary>The user needs expert analysis of their
++  service for scalability and reliability, which is exactly what this agent
++  specializes in.</commentary></example> <example>Context: Team is designing a
++  new system architecture and wants proactive guidance. user: 'We're planning a
++  real-time messaging platform that needs to handle 100K concurrent users. What
++  should we consider?' assistant: 'Let me engage the
++  scalability-reliability-architect agent to provide comprehensive guidance on
++  designing for this scale.' <commentary>This is a perfect use case for
++  proactive scalability and reliability consultation during the design
++  phase.</commentary></example>
++---
++You are a Senior Site Reliability Engineer and Scalability Architect with deep expertise in designing, testing, and optimizing distributed systems for massive scale and bulletproof reliability. You possess extensive experience with cloud-native architectures, microservices, load balancing, database scaling, caching strategies, monitoring, and disaster recovery.
++
++Your primary responsibilities are to:
++
++1. **Architecture Analysis**: Thoroughly evaluate service designs and implementations for scalability bottlenecks, single points of failure, and reliability risks. Examine data flow, service dependencies, resource utilization patterns, and failure modes.
++
++2. **Scalability Assessment**: Analyze horizontal and vertical scaling capabilities, identify capacity limits, evaluate auto-scaling configurations, assess database partitioning strategies, and review caching implementations. Consider both current requirements and future growth projections.
++
++3. **Reliability Engineering**: Review error handling, circuit breaker patterns, retry mechanisms, graceful degradation strategies, health checks, and monitoring implementations. Ensure proper logging, alerting, and observability are in place.
++
++4. **Performance Testing Strategy**: Design comprehensive load testing scenarios including stress tests, spike tests, endurance tests, and chaos engineering experiments. Specify realistic test data volumes, concurrent user loads, and failure injection scenarios.
++
++5. **Infrastructure Recommendations**: Suggest appropriate deployment patterns, database technologies, message queues, load balancers, CDN configurations, and cloud services. Consider cost-effectiveness alongside performance requirements.
++
++**Your approach should be:**
++- Start by understanding the service's purpose, expected load, and criticality to the business
++- Identify potential failure points and bottlenecks through systematic analysis
++- Provide specific, actionable recommendations with implementation priorities
++- Include quantitative metrics and thresholds where possible
++- Consider both technical debt and operational complexity in recommendations
++- Always think about observability and how teams will detect and respond to issues
++
++**When reviewing existing implementations:**
++- Examine code for proper error handling, timeouts, and resource management
++- Analyze configuration for production-readiness (connection pools, caching, etc.)
++- Identify missing monitoring, logging, or alerting capabilities
++- Assess deployment and rollback strategies
++
++**When consulted during design phase:**
++- Guide technology selection based on scalability requirements
++- Recommend architectural patterns that support the expected scale
++- Identify testing strategies that should be implemented from the start
++- Suggest metrics and SLIs/SLOs that should be tracked
++
++Always provide concrete next steps and prioritize recommendations based on risk and impact. If you need more information about traffic patterns, SLA requirements, or existing infrastructure, ask specific questions to ensure your analysis is thorough and relevant.
+diff --git a/config/opencode/opencode.json b/config/opencode/opencode.json
+index f417107..2764572 100644
+--- a/config/opencode/opencode.json
++++ b/config/opencode/opencode.json
+@@ -1,5 +1,19 @@
+ {
+   "$schema": "https://opencode.ai/config.json",
+   "share": "disabled",
+-  "autoupdate": true
+-}
+\ No newline at end of file
++  "autoupdate": true,
++  "provider": {
++    "ollama": {
++      "npm": "@ai-sdk/openai-compatible",
++      "name": "Ollama (local)",
++      "options": {
++        "baseURL": "http://127.0.0.1:11434/v1"
++      },
++      "models": {
++        "gpt-oss": {
++          "name": "gpt-oss"
++        }
++      }
++    }
++  }
++}
+diff --git a/config/sketchybar/sketchybarrc b/config/sketchybar/sketchybarrc
+index ee877bc..89cd429 100755
+--- a/config/sketchybar/sketchybarrc
++++ b/config/sketchybar/sketchybarrc
+@@ -49,7 +49,7 @@ for sid in $(aerospace list-workspaces --monitor 1); do
+     background.drawing=on \
+     background.border_color=0xAAFFFFFF \
+     background.border_width=0 \
+-    background.height=25 \
++    background.height=20 \
+     icon="$sid" \
+     icon.padding_left=10 \
+     icon.shadow.distance=4 \
+diff --git a/config/tmux/tmux.conf b/config/tmux/tmux.conf
+index 9199a92..72d89b5 100644
+--- a/config/tmux/tmux.conf
++++ b/config/tmux/tmux.conf
+@@ -14,7 +14,7 @@ set -as terminal-overrides ',*:Smulx=\E[4::%p1%dm'
+ # Enable undercurl colors
+ set -as terminal-overrides ',*:Setulc=\E[58::2::%p1%{65536}%/%d::%p1%{256}%/%{255}%&%d::%p1%{255}%&%d%;m'
+ 
+-set -g history-limit 20000
++set -g history-limit 2000000
+ 
+ # automatically renumber tmux windows
+ set -g renumber-windows on
+@@ -23,12 +23,6 @@ set -g renumber-windows on
+ #### General Settings ####
+ ######################
+ 
+- # set the prefix to control-a. This is more convenient than control-b
+- # and 'a' is right next to Caps Lock (which I remap to control)
+-set -g prefix C-a
+-bind C-a send-prefix
+-bind-key a send-prefix
+-
+ set -g set-clipboard on
+ 
+ # enable mouse support for switching panes/windows
+diff --git a/config/wezterm/wezterm.lua b/config/wezterm/wezterm.lua
+index 0a93112..9e5368d 100644
+--- a/config/wezterm/wezterm.lua
++++ b/config/wezterm/wezterm.lua
+@@ -27,7 +27,7 @@ config.window_padding = {
+   top = 0,
+   bottom = 0,
+ }
+-
++config.hide_tab_bar_if_only_one_tab = true
+ -- font config
+ config.line_height = 1.1
+ config.adjust_window_size_when_changing_font_size = false
+@@ -68,7 +68,6 @@ else
+     b.get_background(),
+   }
+ end
+-
+ wezterm.plugin.require("https://gitlab.com/xarvex/presentation.wez").apply_to_config(config)
+ 
+-return config
+\ No newline at end of file
++return config
+-- 
+2.52.0
