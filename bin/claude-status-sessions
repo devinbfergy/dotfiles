@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# claude-status-sessions: Generate tmux status-left content showing all sessions
+# with Claude status indicators. Also writes a position map for click handling.
+
+# Nerd font icon display widths — adjust if icons look misaligned
+ICON_WIDTH=2   # Width of  (tmux) and 󰅩 (Claude) in your terminal
+SEP_WIDTH=1    # Width of  (powerline arrow)
+
+# Match catppuccin theme based on system appearance
+if [[ "$(defaults read -g AppleInterfaceStyle 2>/dev/null)" == "Dark" ]]; then
+  thm_cyan="#89dceb"
+  thm_yellow="#f9e2af"
+  thm_green="#a6e3a1"
+  thm_gray="#313244"
+  thm_black4="#585b70"
+else
+  thm_cyan="#179299"
+  thm_yellow="#df8e1d"
+  thm_green="#40a02b"
+  thm_gray="#bcc0cc"
+  thm_black4="#acb0be"
+fi
+
+sep=""   # U+E0B0 powerline right-facing filled arrow
+icon=""  # tmux nerd font icon
+
+current=$(tmux display-message -p "#{session_name}" 2>/dev/null || echo "")
+
+declare -A sess_waiting=()
+declare -A sess_active=()
+while IFS='|' read -r wsess wactive wwaiting; do
+  [[ "$wwaiting" == "1" ]] && sess_waiting["$wsess"]=1
+  if [[ "$wactive" == "1" ]] && [[ -z "${sess_waiting[$wsess]:-}" ]]; then
+    sess_active["$wsess"]=1
+  fi
+done < <(tmux list-windows -a -F "#{session_name}|#{@claude-active}|#{@claude-waiting}" 2>/dev/null)
+
+out=""
+col=0
+map=""
+
+while IFS='|' read -r name _wins _attached; do
+  n=${#name}
+  start=$col
+
+  if [[ "$name" == "$current" ]]; then
+    # Visible: " icon name sep " = 1+ICON+1+n+1+SEP+1
+    w=$((1 + ICON_WIDTH + 1 + n + 1 + SEP_WIDTH + 1))
+    out+="#[bg=${thm_cyan},fg=${thm_gray}] ${icon} ${name} #[bg=default,fg=${thm_cyan}]${sep}#[fg=default] "
+  elif [[ "${sess_waiting[$name]:-}" == "1" ]]; then
+    # Visible: " 󰅩 name " = 1+ICON+1+n+1
+    w=$((1 + ICON_WIDTH + 1 + n + 1))
+    out+="#[fg=${thm_yellow}] 󰅩 ${name} #[fg=default]"
+  elif [[ "${sess_active[$name]:-}" == "1" ]]; then
+    # Visible: " 󰅩 name " = 1+ICON+1+n+1
+    w=$((1 + ICON_WIDTH + 1 + n + 1))
+    out+="#[fg=${thm_green}] 󰅩 ${name} #[fg=default]"
+  else
+    # Visible: "  name " = 2+n+1
+    w=$((2 + n + 1))
+    out+="#[fg=${thm_black4}]  ${name} #[fg=default]"
+  fi
+
+  col=$((col + w))
+  map+="${name}:${start}:$((col - 1)) "
+done < <(tmux list-sessions -F "#{session_name}|#{session_windows}|#{?session_attached,1,0}" 2>/dev/null)
+
+# Write position map for click handler (faster than a tmux option round-trip)
+printf '%s' "${map% }" > /tmp/claude-session-map
+
+printf '%s' "$out"

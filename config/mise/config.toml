@@ -2,7 +2,10 @@
 uv = "latest"
 ruff = "latest"
 java = "zulu-21"
-go = "1.22"
+go = "latest"
+ty = "latest"
+prek = "latest"
+python = "3.14.3"
 
 [settings]
 python.uv_venv_auto = true

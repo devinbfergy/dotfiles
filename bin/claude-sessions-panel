@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# claude-sessions-panel: Interactive Claude Code session monitor
+# Runs as a persistent tmux side pane
+# - Auto-refreshes every 3s via fzf --listen
+# - Enter or click to switch to that session
+# - Ctrl-C / q / Esc to close pane
+
+SCRIPT="$(realpath "$0")"
+
+# ── Session list generator ─────────────────────────────────────────────────
+# Called both directly and via fzf reload (hence the --get-sessions flag)
+get_sessions() {
+  local current
+  current=$(tmux display-message -p "#{session_name}" 2>/dev/null || echo "")
+
+  local -A sess_waiting=()
+  local -A sess_active=()
+
+  while IFS='|' read -r wsess wactive wwaiting; do
+    [[ "$wwaiting" == "1" ]] && sess_waiting["$wsess"]=1
+    if [[ "$wactive" == "1" ]] && [[ -z "${sess_waiting[$wsess]:-}" ]]; then
+      sess_active["$wsess"]=1
+    fi
+  done < <(tmux list-windows -a -F "#{session_name}|#{@claude-active}|#{@claude-waiting}" 2>/dev/null)
+
+  while IFS='|' read -r name _windows _attached; do
+    local marker=" "
+    [[ "$name" == "$current" ]] && marker="▶"
+
+    if [[ "${sess_waiting[$name]:-}" == "1" ]]; then
+      printf "\033[33m%s %-20s 󰅩  WAITING\033[0m\n" "$marker" "$name"
+    elif [[ "${sess_active[$name]:-}" == "1" ]]; then
+      printf "\033[32m%s %-20s 󰅩  working\033[0m\n" "$marker" "$name"
+    else
+      printf "%s %-20s\n" "$marker" "$name"
+    fi
+  done < <(tmux list-sessions -F "#{session_name}|#{session_windows}|#{?session_attached,1,0}" 2>/dev/null)
+}
+
+if [[ "${1:-}" == "--get-sessions" ]]; then
+  get_sessions
+  exit 0
+fi
+
+# ── Main fzf loop ─────────────────────────────────────────────────────────
+while true; do
+  # Pick a random port for fzf --listen (auto-refresh via curl)
+  PORT=$((RANDOM % 40000 + 10000))
+
+  # Background loop: send reload to fzf every 3s
+  (
+    sleep 0.8
+    while curl -sm1 "localhost:$PORT" -d "reload($SCRIPT --get-sessions)" 2>/dev/null; do
+      sleep 3
+    done
+  ) &
+  REFRESH_PID=$!
+
+  selected=$(get_sessions | fzf \
+    --ansi \
+    --no-sort \
+    --height=100% \
+    --border=none \
+    --margin=1,1 \
+    --prompt=" 󰅩 Sessions " \
+    --pointer="▶" \
+    --color="prompt:cyan,pointer:cyan,hl:yellow,hl+:yellow,fg+:white,bg+:236" \
+    --header=" ↵/click: switch  ctrl-r: refresh" \
+    --header-first \
+    --listen="$PORT" \
+    --bind="ctrl-r:reload($SCRIPT --get-sessions)" \
+    --bind="double-click:accept" \
+    --bind="ctrl-c:abort" \
+    --bind="esc:abort" \
+    2>/dev/null)
+
+  kill "$REFRESH_PID" 2>/dev/null || true
+  wait "$REFRESH_PID" 2>/dev/null || true
+
+  # Empty selection = user aborted (esc/ctrl-c) → exit pane
+  if [[ -z "$selected" ]]; then
+    break
+  fi
+
+  # Strip ANSI codes, strip leading marker, grab first word (session name)
+  session=$(printf '%s' "$selected" \
+    | sed $'s/\033\\[[0-9;]*m//g' \
+    | sed 's/^[▶ ]*//' \
+    | awk '{print $1}')
+
+  if [[ -n "$session" ]]; then
+    tmux switch-client -t "$session" 2>/dev/null || true
+    sleep 0.2  # let tmux settle so current-session marker updates
+  fi
+  # Loop: re-run fzf so the panel stays alive with updated state
+done

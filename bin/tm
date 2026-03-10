@@ -9,25 +9,38 @@ get_sessions() {
   local current_session=$(tmux display-message -p "#S" 2>/dev/null)
   local inside_tmux="$1"
 
-  tmux list-sessions -F "#{session_name}|#{session_windows}|#{?session_attached,attached,detached}" 2>/dev/null |
-    awk -F"|" -v current="$current_session" -v inside="$inside_tmux" "{
-      # If inside tmux, skip the current session
-      if (inside == \"true\" && \$1 == current) {
-        next
-      }
+  # Get claude status per session: count windows with @claude-active or @claude-waiting
+  declare -A claude_status
+  while IFS='|' read -r sess_name win_claude_active win_claude_waiting; do
+    if [[ "$win_claude_waiting" == "1" ]]; then
+      claude_status[$sess_name]="waiting"
+    elif [[ "$win_claude_active" == "1" && "${claude_status[$sess_name]:-}" != "waiting" ]]; then
+      claude_status[$sess_name]="active"
+    fi
+  done < <(tmux list-windows -a -F "#{session_name}|#{@claude-active}|#{@claude-waiting}" 2>/dev/null)
 
-      if (inside == \"true\" && \$1 == current) {
-        status = \"(current)\"
-        icon = \"→\"
-      } else if (\$3 == \"attached\") {
-        status = \"\"
-        icon = \"\"
-      } else {
-        status = \"\"
-        icon = \" \"
-      }
-      printf \"%s %-20s %s %2s windows\\n\", icon, \$1, status, \$2
-    }"
+  tmux list-sessions -F "#{session_name}|#{session_windows}|#{?session_attached,attached,detached}" 2>/dev/null |
+    while IFS='|' read -r name windows attach_status; do
+      # Skip current session if inside tmux
+      if [[ "$inside_tmux" == "true" && "$name" == "$current_session" ]]; then
+        continue
+      fi
+
+      if [[ "$attach_status" == "attached" ]]; then
+        icon=""
+      else
+        icon=" "
+      fi
+
+      # Claude status indicator
+      case "${claude_status[$name]:-}" in
+        waiting) claude_icon=" 󰅩!" ;;
+        active)  claude_icon=" 󰅩" ;;
+        *)       claude_icon="" ;;
+      esac
+
+      printf "%s %-20s%s %2s windows\n" "$icon" "$name" "$claude_icon" "$windows"
+    done
 }
 
 # Handle command line arguments
@@ -60,7 +73,7 @@ result=$(echo "$sessions_input" |
     --header-first \
     --border=rounded \
     --color="header:italic" \
-    --preview="tmux list-windows -t {1} -F \"  #{window_index}: #{window_name} #{?window_active,(active),}\" 2>/dev/null || echo 'New session: {q}'" \
+    --preview="tmux list-windows -t {2} -F '  #{window_index}: #{window_name} #{?window_active,(active),}#{?@claude-waiting, 󰅩 WAITING,#{?@claude-active, 󰅩,}}' 2>/dev/null || echo 'New session: {q}'" \
     --preview-window="right:40%:wrap" \
     --bind="ctrl-r:reload($0 --get-sessions \"$inside_tmux_flag\")" \
     --bind="ctrl-d:execute(tmux kill-session -t {1} 2>/dev/null)+reload($0 --get-sessions \"$inside_tmux_flag\")" \

@@ -76,7 +76,48 @@ git clone --bare "${args[@]}" "$location"
 pushd "$location" > /dev/null
 msg "${YELLOW}Adjusting origin fetch locations...${NOFORMAT}"
 git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+git fetch --all
 popd > /dev/null
 msg "${YELLOW}Setting .git file contents...${NOFORMAT}"
 echo "gitdir: ./$location" > .git
+
+msg "${YELLOW}Checking out default branch...${NOFORMAT}"
+default_branch=$(git -C "$location" symbolic-ref --short HEAD 2>/dev/null || echo "")
+if [[ -z "$default_branch" ]]; then
+  if git -C "$location" show-ref --verify --quiet refs/heads/main; then
+    default_branch="main"
+  elif git -C "$location" show-ref --verify --quiet refs/heads/master; then
+    default_branch="master"
+  else
+    msg "${ORANGE}Could not determine default branch, skipping worktree creation.${NOFORMAT}"
+    default_branch=""
+  fi
+fi
+
+if [[ -n "$default_branch" ]]; then
+  msg "${YELLOW}Creating worktree for '$default_branch'...${NOFORMAT}"
+  git worktree add "$default_branch" "$default_branch"
+
+  pushd "$default_branch" > /dev/null
+
+  if [[ -d ".githooks" ]]; then
+    msg "${YELLOW}Setting core.hooksPath to repo .githooks...${NOFORMAT}"
+    git config core.hooksPath "$(pwd)/.githooks"
+  fi
+
+  if [[ -f ".pre-commit-config.yaml" ]]; then
+    msg "${YELLOW}Installing prek hooks...${NOFORMAT}"
+    # GIT_CONFIG_GLOBAL=/dev/null bypasses the global core.hooksPath dispatcher
+    # so prek installs directly to .bare/hooks/ (shared by all worktrees).
+    # prek runs correctly via the global dispatcher chaining to .bare/hooks/.
+    # git-ai git-hooks ensure runs after so it can set its local hooksPath last.
+    GIT_CONFIG_GLOBAL=/dev/null prek install
+  fi
+
+  popd > /dev/null
+fi
+
+msg "${YELLOW}Installing git-ai hooks...${NOFORMAT}"
+git-ai git-hooks ensure
+
 msg "${GREEN}Success.${NOFORMAT}"

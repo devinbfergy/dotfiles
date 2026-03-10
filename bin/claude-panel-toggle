@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# claude-panel-toggle: Show/hide the Claude sessions side pane in the current window
+# Stored per-window via @claude-panel-pane option
+
+PANEL_OPTION="@claude-panel-pane"
+PANEL_WIDTH="${CLAUDE_PANEL_WIDTH:-36}"
+
+stored=$(tmux show-option -wqv "$PANEL_OPTION" 2>/dev/null || echo "")
+
+if [[ -n "$stored" ]]; then
+  # Check if the pane still exists
+  if tmux list-panes -a -F "#{pane_id}" 2>/dev/null | grep -qF "$stored"; then
+    tmux kill-pane -t "$stored" 2>/dev/null || true
+    tmux set-window-option -u "$PANEL_OPTION" 2>/dev/null || true
+    exit 0
+  else
+    # Pane is gone (user closed it), clear stale option
+    tmux set-window-option -u "$PANEL_OPTION" 2>/dev/null || true
+  fi
+fi
+
+# Create a right-side pane; -d keeps focus in the current pane
+pane_id=$(tmux split-window -h -l "$PANEL_WIDTH" -d \
+  -P -F "#{pane_id}" \
+  "claude-sessions-panel" 2>/dev/null)
+
+if [[ -n "$pane_id" ]]; then
+  tmux set-window-option "$PANEL_OPTION" "$pane_id"
+fi

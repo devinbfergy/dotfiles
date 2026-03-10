@@ -31,7 +31,9 @@ get_icon() {
   vi | vim | nvim | lvim)
     echo ""
     ;;
-  lazygit | git | tig)
+  claude)
+    echo "󰅩"
+    ;;  lazygit | git | tig)
     echo ""
     ;;
   node)

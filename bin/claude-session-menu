@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# claude-session-menu: Show a tmux popup menu of all sessions with Claude status.
+# Called on MouseDown1StatusLeft; receives mouse X position as $1.
+
+mouse_x="${1:-C}"
+
+current=$(tmux display-message -p "#{session_name}" 2>/dev/null || echo "")
+
+declare -A sess_waiting=()
+declare -A sess_active=()
+while IFS='|' read -r wsess wactive wwaiting; do
+  [[ "$wwaiting" == "1" ]] && sess_waiting["$wsess"]=1
+  if [[ "$wactive" == "1" ]] && [[ -z "${sess_waiting[$wsess]:-}" ]]; then
+    sess_active["$wsess"]=1
+  fi
+done < <(tmux list-windows -a -F "#{session_name}|#{@claude-active}|#{@claude-waiting}" 2>/dev/null)
+
+# Build menu args: groups of (label shortcut command)
+args=(-T " Sessions" -x "$mouse_x" -y S)
+
+while IFS='|' read -r name _windows _attached; do
+  if [[ "${sess_waiting[$name]:-}" == "1" ]]; then
+    label="󰅩  ${name}  waiting"
+  elif [[ "${sess_active[$name]:-}" == "1" ]]; then
+    label="󰅩  ${name}  working"
+  elif [[ "$name" == "$current" ]]; then
+    label="▶  ${name}"
+  else
+    label="   ${name}"
+  fi
+
+  args+=("$label" "" "switch-client -t '$name'")
+done < <(tmux list-sessions -F "#{session_name}|#{session_windows}|#{?session_attached,1,0}" 2>/dev/null)
+
+tmux display-menu "${args[@]}"

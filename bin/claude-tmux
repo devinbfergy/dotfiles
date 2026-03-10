@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# claude-tmux: Bridge between Claude Code hooks and tmux
+# Uses tmux user options (@claude-*) to track state per pane/window
+#
+# Usage (called by Claude Code hooks):
+#   claude-tmux session-start    # Mark pane as running Claude
+#   claude-tmux session-end      # Unmark pane
+#   claude-tmux notify           # Mark window as needing attention
+#   claude-tmux busy             # Clear attention flag (Claude is working)
+#   claude-tmux clear-waiting    # Clear waiting flag (called by tmux focus hook)
+
+set -euo pipefail
+
+PANE="${TMUX_PANE:-}"
+
+# Bail if not inside tmux
+if [[ -z "$PANE" || -z "${TMUX:-}" ]]; then
+  exit 0
+fi
+
+WINDOW_ID=$(tmux display-message -t "$PANE" -p "#{window_id}" 2>/dev/null) || exit 0
+
+case "${1:-}" in
+  session-start)
+    tmux set-option -p -t "$PANE" @claude-active 1 2>/dev/null || true
+    ;;
+  session-end)
+    tmux set-option -pu -t "$PANE" @claude-active 2>/dev/null || true
+    # Also clear waiting if this was the only claude pane in the window
+    remaining=$(tmux list-panes -t "$WINDOW_ID" -F '#{@claude-active}' 2>/dev/null | grep -c 1 || true)
+    if [[ "$remaining" -eq 0 ]]; then
+      tmux set-option -wu -t "$WINDOW_ID" @claude-waiting 2>/dev/null || true
+    fi
+    ;;
+  notify)
+    tmux set-option -w -t "$WINDOW_ID" @claude-waiting 1 2>/dev/null || true
+    ;;
+  busy)
+    tmux set-option -wu -t "$WINDOW_ID" @claude-waiting 2>/dev/null || true
+    ;;
+  clear-waiting)
+    # Called by tmux pane-focus-in hook
+    tmux set-option -wu @claude-waiting 2>/dev/null || true
+    ;;
+  *)
+    echo "Usage: claude-tmux {session-start|session-end|notify|busy|clear-waiting}" >&2
+    exit 1
+    ;;
+esac

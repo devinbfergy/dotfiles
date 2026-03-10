@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# claude-session-click: Switch to the session at the clicked X position in status-left.
+# Called by tmux MouseDown1StatusDefault with #{mouse_x} as $1, #{client_name} as $2.
+
+mouse_x="${1:-0}"
+client="${2:-}"
+map_file="/tmp/claude-session-map"
+
+[[ -f "$map_file" ]] || exit 0
+
+while IFS=':' read -r -d ' ' name start end || [[ -n "$name" ]]; do
+  [[ -z "$name" ]] && continue
+  if [[ "$mouse_x" -ge "$start" && "$mouse_x" -le "$end" ]]; then
+    if [[ -n "$client" ]]; then
+      tmux switch-client -c "$client" -t "$name" 2>/dev/null || tmux switch-client -t "$name" 2>/dev/null || true
+    else
+      tmux switch-client -t "$name" 2>/dev/null || true
+    fi
+    tmux refresh-client -S 2>/dev/null || true
+    exit 0
+  fi
+done < "$map_file"
