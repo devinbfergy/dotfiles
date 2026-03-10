@@ -1,14 +1,15 @@
 local formatters = {
-  javascript = { "prettier" },
-  javascriptreact = { "prettier" },
-  typescript = { "prettier" },
-  typescriptreact = { "prettier" },
-  astro = { "prettier" },
-  json = { "prettier" },
-  jsonc = { "prettier" },
-  html = { "prettier" },
-  yaml = { "prettier" },
-  css = { "stylelint", "prettier" },
+  javascript = { "prettier", "oxfmt" },
+  javascriptreact = { "prettier", "oxfmt" },
+  typescript = { "prettier", "oxfmt" },
+  typescriptreact = { "prettier", "oxfmt" },
+  markdown = { "prettier", "oxfmt" },
+  astro = { "prettier", "oxfmt" },
+  json = { "prettier", "oxfmt" },
+  jsonc = { "prettier", "oxfmt" },
+  html = { "prettier", "oxfmt" },
+  yaml = { "prettier", "oxfmt" },
+  css = { "stylelint", "prettier", "oxfmt" },
   sh = { "shellcheck", "shfmt" },
   python = { "black", "isort" },
   go = { "gofmt" },
@@ -33,7 +34,18 @@ return {
     cond = not vim.g.vscode,
     dependencies = {
       -- Helpers to install LSPs and maintain them
-      { "williamboman/mason.nvim", version = "^1.0.0" },
+      {
+        "williamboman/mason.nvim",
+        opts = {
+          ui = {
+            icons = {
+              package_installed = "✓",
+              package_pending = "➜",
+              package_uninstalled = "✗",
+            },
+          },
+        },
+      },
       { "williamboman/mason-lspconfig.nvim", version = "^1.0.0" },
       "saghen/blink.cmp",
     },
